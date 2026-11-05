@@ -1,0 +1,75 @@
+# Installs a published release with the generated shell installer on clean runners.
+name: Install test
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to test
+        default: v0.0.1
+permissions:
+  contents: read
+env:
+  BASE: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag || 'v0.0.1' }}
+jobs:
+  shell-installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu-x64, os: ubuntu-22.04 }
+          - { name: ubuntu-arm64, os: ubuntu-22.04-arm }
+          - { name: alpine-x64, os: ubuntu-22.04, container: "alpine:3.20" }
+          - { name: alpine-arm64, os: ubuntu-22.04-arm, container: "alpine:3.20" }
+          - { name: macos-arm64, os: macos-15 }
+          - { name: macos-x64, os: macos-15-intel }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    steps:
+      - name: Alpine prerequisites
+        if: matrix.container
+        run: apk add --no-cache curl bash
+      - name: Install with the published installer
+        shell: sh
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf "$BASE/kiteline-installer.sh" -o installer.sh
+          sh installer.sh --verbose 2>&1 | tee install.log
+          echo "--- checksum lines:"; grep -iE 'checksum|sha256' install.log || echo "(no checksum message)"
+          "$HOME/.local/bin/kiteline"
+          echo "PATH hooks: $(grep -l kiteline "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc" 2>/dev/null | tr '\n' ' ')"
+      - name: Tampered checksum must fail
+        shell: sh
+        run: |
+          sed 's/_checksum_value="[0-9a-f]\{64\}"/_checksum_value="0000000000000000000000000000000000000000000000000000000000000000"/' installer.sh > bad.sh
+          rm -rf "$HOME/.local/bin/kiteline"
+          if sh bad.sh 2>&1 | tee bad.log; [ -x "$HOME/.local/bin/kiteline" ]; then echo "FAIL: tampered install succeeded"; exit 1; fi
+          grep -i checksum bad.log || true; echo "PASS: tampered archive rejected"
+      - name: macOS details (signature, quarantine, stock PATH without coreutils)
+        if: runner.os == 'macOS'
+        run: |
+          sh installer.sh >/dev/null 2>&1
+          codesign -dv "$HOME/.local/bin/kiteline" 2>&1 | grep -E 'Signature|not signed|Identifier' || true
+          echo "quarantine: $(xattr "$HOME/.local/bin/kiteline" | grep -c quarantine)"
+          echo "sha256sum in default PATH: $(command -v sha256sum || echo none)"
+          echo "--- stock PATH (/usr/bin:/bin:/usr/sbin:/sbin):"
+          rm -rf "$HOME/.local/bin/kiteline"
+          env PATH=/usr/bin:/bin:/usr/sbin:/sbin sh installer.sh 2>&1 | grep -iE 'checksum|installed' || true
+          env PATH=/usr/bin:/bin:/usr/sbin:/sbin sh bad.sh 2>&1 | grep -iE 'checksum|installed' || true
+          [ -x "$HOME/.local/bin/kiteline" ] && echo "NOTE: on stock PATH the tampered installer still installed" || echo "stock PATH: tampered install rejected"
+  homebrew:
+    name: homebrew-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install from formula via a local tap
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"; fi
+          brew tap-new --no-git local/kiteline >/dev/null
+          curl -LsSf "$BASE/kiteline.rb" -o "$(brew --repository local/kiteline)/Formula/kiteline.rb"
+          brew install local/kiteline/kiteline
+          kiteline
+          echo "real path: $(readlink -f "$(command -v kiteline)" 2>/dev/null || python3 -c 'import os,shutil;print(os.path.realpath(shutil.which("kiteline")))')"
+          echo "opt path: $(brew --prefix kiteline)/bin/kiteline"
