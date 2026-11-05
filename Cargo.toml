@@ -1,0 +1,27 @@
+[package]
+name = "kiteline"
+version = "0.0.1"
+edition = "2021"
+description = "Drive your coding agents from your phone"
+license = "Apache-2.0"
+repository = "https://github.com/nitingupta220/kiteline-ci-spike"
+homepage = "https://kiteline.dev"
+
+[[bin]]
+name = "kiteline"
+path = "src/main.rs"
+
+[dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
